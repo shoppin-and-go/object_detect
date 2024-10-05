@@ -2,6 +2,9 @@ import cv2
 import numpy as np
 import os
 from dataclasses import dataclass
+import requests
+import json
+import base64
 
 
 @dataclass
@@ -18,6 +21,7 @@ def get_width_height_area(x, y, w, h):
     return width, height, area
 
 
+# 이미지 저장
 def write_image(img: Image):
     if not os.path.exists(img.save_path):
         os.makedirs(img.save_path)
@@ -25,6 +29,14 @@ def write_image(img: Image):
     cv2.imwrite(img_name, img.image)
 
 
+# cv2로 읽은 이미지를 base64로 인코딩
+def encode_image(img: Image):
+    _, img_bytes = cv2.imencode('.jpg', img.image)
+    encoded_image = base64.b64encode(img_bytes).decode('utf-8')
+    return encoded_image
+
+
+# 이미지 노이즈 제거
 def denoise_thresholded_image(kernel, img):
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, kernel)
     fg_threshold = cv2.morphologyEx(img, cv2.MORPH_OPEN, kernel, iterations=1)
@@ -33,23 +45,42 @@ def denoise_thresholded_image(kernel, img):
     return fg_threshold
 
 
-def send_image(img: Image):
-    # TODO: Send image to server
-    later = True
+# 이미지 전송
+def send_all_images(images: list[Image], url: str, process: int):
+    headers = {'Content-Type': 'application/json'}
 
+    # 이미지 데이터 생성
+    data={
+        "process": f"{process}",
+        "images": [
+            {"image_name": img.name, "image_data": encode_image(img)} for img in images
+        ]
+    }
 
-def send_all_images(images: list[Image]):
+    # 이미지 저장
     for img in images:
-        send_image(img)
         write_image(img)
 
+    # 이미지 전송
+    try:
+        response = requests.post(url, json=data, headers=headers)
 
+        if response.status_code == 200:
+            print("image sent successfully!")
+        else:
+            print(f"image sent failed: {response.status_code}")
+    except Exception as e:
+        print(f"Error: {e}")
+
+
+# 해당 프레임에서 ROI 영역만 자르기
 def cut_roi(frame, roi):
     top_left_x, top_left_y, bottom_right_x, bottom_right_y = roi
     output = frame[top_left_y:bottom_right_y, top_left_x:bottom_right_x]
     return output
 
 
+# 움직임 검출 메인
 def read_video(config):
     print("Reading video...")
 
@@ -89,7 +120,7 @@ def read_video(config):
     process_counter = 1  # 넣고 빼는 과정이 몇 번 있었는지 카운트
     before_process_frame = 0  # 이전에 물체인지가 몇번째 프레임에서 발생했는지 카운트
     start_process_frame = 0  # 물체인지가 시작된 프레임
-    sending = False  # 지난 프로세스가 넣고 빼는 과정의 마지막 프레임인지 여부
+    sending = False  # 현재 이미지가 감지되고 있는지 여부
     send_Mode = False  # 물체가 인지되어 캡쳐할 상태인지 여부
     send_Frames = []  # 캡쳐할 프레임들을 저장할 리스트
     prev_frame = None  # 이전 프레임을 저장할 변수
@@ -103,7 +134,7 @@ def read_video(config):
         if not ret:  # 읽기 실패 혹은 더이상 읽을 비디오가 없을 때
             print("Reached the end of the video.")
             if send_Mode:
-                send_all_images(send_Frames)
+                send_all_images(send_Frames, config["url"], process_counter)
             break
 
         original_frame = frame.copy()
@@ -111,7 +142,7 @@ def read_video(config):
         frame_counter += 1
 
         if send_Mode and config["sendIMG_Nums"] == len(send_Frames):
-            send_all_images(send_Frames)
+            send_all_images(send_Frames, config["url"], process_counter)
             send_Frames = []
             send_Mode = False
 
@@ -129,7 +160,7 @@ def read_video(config):
                           save_path=config["sendIMG"]))
 
             print(f"Sending last frames: {len(sendig_Frames)}")
-            send_all_images(sendig_Frames)
+            send_all_images(sendig_Frames, config["url"], process_counter)
             prev_frame = None
             prev_prev_frame = None
             last_frames = []
@@ -266,6 +297,7 @@ if __name__ == '__main__':
         "sendIMG": "./send",  # 전송할 이미지를 저장할 경로
         "sendIMG_Nums": 3,  # 전송할 이미지의 개수
         "min_Process_Frames": 6,  # 프로세스로 취급할 최소 프레임 수
+        "url": "http://127.0.0.1:8000/upload_images", # 이미지 전송할 URL
     }
 
     read_video(config)
